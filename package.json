@@ -1,0 +1,9 @@
+{
+  "name": "notion-proxy",
+  "version": "1.0.0",
+  "description": "Notion API proxy for Med Anki app",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  }
+}
