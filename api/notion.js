@@ -1,63 +1,3 @@
-const NOTION_VERSION = '2022-06-28';
-const NOTION_BASE = 'https://api.notion.com/v1';
-
-function extractText(blocks) {
-  let text = '';
-  for (const block of blocks) {
-    const type = block.type;
-    const data = block[type];
-    if (!data) continue;
-    if (data.rich_text && Array.isArray(data.rich_text)) {
-      text += data.rich_text.map(t => t.plain_text || '').join('') + '\n';
-    }
-    if (type === 'child_page') {
-      text += '[子頁面: ' + (data.title || '') + ']\n';
-    }
-  }
-  return text;
-}
-
-async function notionRequest(path, token) {
-  const res = await fetch(NOTION_BASE + path, {
-    headers: {
-      'Authorization': 'Bearer ' + token,
-      'Notion-Version': NOTION_VERSION,
-      'Content-Type': 'application/json',
-    }
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error('Notion API ' + res.status + ': ' + (data.message || res.statusText));
-  return data;
-}
-
-async function getChildPages(pageId, token) {
-  const pages = [];
-  let cursor = undefined;
-  do {
-    const url = '/blocks/' + pageId + '/children?page_size=100' + (cursor ? '&start_cursor=' + cursor : '');
-    const data = await notionRequest(url, token);
-    for (const block of data.results) {
-      if (block.type === 'child_page') {
-        pages.push({ id: block.id, title: block.child_page?.title || '未命名' });
-      }
-    }
-    cursor = data.next_cursor;
-  } while (cursor);
-  return pages;
-}
-
-async function getPageContent(pageId, token) {
-  let text = '';
-  let cursor = undefined;
-  do {
-    const url = '/blocks/' + pageId + '/children?page_size=100' + (cursor ? '&start_cursor=' + cursor : '');
-    const data = await notionRequest(url, token);
-    text += extractText(data.results);
-    cursor = data.next_cursor;
-  } while (cursor);
-  return text;
-}
-
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -67,4 +7,74 @@ module.exports = async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const { token, pageId, action } = req.body;
-  if (!token || !pageId) return res.status(400).jso
+  if (!token || !pageId) return res.status(400).json({ error: 'Missing token or pageId' });
+
+  const NOTION_BASE = 'https://api.notion.com/v1';
+  const HEADERS = {
+    'Authorization': 'Bearer ' + token,
+    'Notion-Version': '2022-06-28',
+    'Content-Type': 'application/json',
+  };
+
+  async function get(path) {
+    const r = await fetch(NOTION_BASE + path, { headers: HEADERS });
+    const d = await r.json();
+    if (!r.ok) throw new Error('Notion ' + r.status + ': ' + (d.message || ''));
+    return d;
+  }
+
+  function getText(blocks) {
+    let t = '';
+    for (const b of blocks) {
+      const bd = b[b.type];
+      if (bd && bd.rich_text) t += bd.rich_text.map(x => x.plain_text || '').join('') + '\n';
+      if (b.type === 'child_page') t += '[子頁面: ' + (bd.title || '') + ']\n';
+    }
+    return t;
+  }
+
+  async function getChildren(id) {
+    const pages = [];
+    let cursor = null;
+    do {
+      const url = '/blocks/' + id + '/children?page_size=100' + (cursor ? '&start_cursor=' + cursor : '');
+      const d = await get(url);
+      for (const b of d.results) {
+        if (b.type === 'child_page') pages.push({ id: b.id, title: b.child_page.title || '未命名' });
+      }
+      cursor = d.next_cursor;
+    } while (cursor);
+    return pages;
+  }
+
+  async function getContent(id) {
+    let text = '';
+    let cursor = null;
+    do {
+      const url = '/blocks/' + id + '/children?page_size=100' + (cursor ? '&start_cursor=' + cursor : '');
+      const d = await get(url);
+      text += getText(d.results);
+      cursor = d.next_cursor;
+    } while (cursor);
+    return text;
+  }
+
+  try {
+    const children = await getChildren(pageId);
+    const mainPage = await get('/pages/' + pageId);
+    const mainTitle = (mainPage.properties?.title?.title?.[0]?.plain_text) || '內科主頁面';
+    const allPages = [{ id: pageId, title: mainTitle }, ...children];
+
+    const results = [];
+    for (const pg of allPages) {
+      try {
+        const content = await getContent(pg.id);
+        if (content.trim().length > 20) results.push({ id: pg.id, title: pg.title, content: content.trim() });
+      } catch (e) { /* skip */ }
+    }
+
+    return res.status(200).json({ success: true, pages: results });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+};
